@@ -1,5 +1,6 @@
 import asyncio
 import pandas as pd
+import re
 from playwright.async_api import async_playwright
 
 # CONFIG — change this to your league/championship page
@@ -55,6 +56,12 @@ async def get_match_links(page, championship_url):
 
 async def parse_match(page, match_url, referee_stats):
     await page.goto(match_url, wait_until="networkidle")
+
+    #Round
+    og_description = await page.get_attribute('meta[property="og:description"]', "content") or ""
+    print("Description:", og_description)
+
+    
 
     # Teams
     home_team = (await page.get_attribute("div.duelParticipant__home img.participant__image",
@@ -127,10 +134,41 @@ async def parse_match(page, match_url, referee_stats):
 
         for ref, stats in referee_stats.items():
             print(f"{ref}: {stats['games']} games, {stats['yellow']} yellows, {stats['red']} reds")
+    
 
-        
     except:
         pass
+
+    # Stats — navigate to the dedicated stats subpage
+    match_stats = {}
+    try:
+        base_url = match_url.split("?")[0].rstrip("/")
+        mid = match_url.split("mid=")[-1] if "mid=" in match_url else ""
+        stats_url = f"{base_url}/summary/stats/overall/" + (f"?mid={mid}" if mid else "")
+
+        print(f"Navigating to stats page: {stats_url}")
+        await page.goto(stats_url, wait_until="domcontentloaded")
+        await page.wait_for_selector("[data-testid='wcl-statistics-item']", timeout=8000)
+
+        stat_rows = await page.query_selector_all("[data-testid='wcl-statistics-item']")
+        print(f"Found {len(stat_rows)} stat rows")
+
+        for row in stat_rows:
+            category_el = await row.query_selector(
+                "[data-testid='wcl-statistics-category'] [data-testid='wcl-scores-simple-text-01']"
+            )
+            category = (await category_el.text_content()).strip() if category_el else ""
+
+            value_els = await row.query_selector_all("[data-testid='wcl-statistics-value'] span")
+            home_val = (await value_els[0].text_content()).strip() if len(value_els) > 0 else ""
+            away_val = (await value_els[1].text_content()).strip() if len(value_els) > 1 else ""
+
+            if category:
+                match_stats[category] = {"home": home_val, "away": away_val}
+                print(f"  {category}: home={home_val} away={away_val}")
+
+    except Exception as e:
+        print(f"Stats error: {e}")
 
     # Events (goals, cards, etc.)
     events = []
@@ -170,7 +208,7 @@ async def parse_match(page, match_url, referee_stats):
 
 async def main():
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        browser = await p.chromium.launch(headless=False)
         page = await browser.new_page(user_agent="Mozilla/5.0 (compatible; MyScraper/1.0)")
 
         print("Fetching match links...")
