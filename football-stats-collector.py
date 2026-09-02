@@ -1,6 +1,7 @@
 import asyncio
 import pandas as pd
 import re
+import sqlite3
 from playwright.async_api import async_playwright
 
 # CONFIG â€” change this to your league/championship page
@@ -8,6 +9,49 @@ CHAMPIONSHIP_URL = "https://www.soccerway.com/greece/super-league/results/"  # â
 CSV_FILE = "superleague_stats.csv"
 
 
+def create_database():
+    conn = sqlite3.connect("football.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS matches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        url TEXT UNIQUE,
+        home_team TEXT,
+        away_team TEXT,
+        home_goals INTEGER,
+        away_goals INTEGER,
+        referee TEXT
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+def save_match(match):
+
+    conn = sqlite3.connect("football.db")
+    cursor = conn.cursor()
+
+    score = match["score"].split("-")
+
+    cursor.execute("""
+    INSERT OR IGNORE INTO matches
+    (url, home_team, away_team, home_goals, away_goals, referee)
+    VALUES (?, ?, ?, ?, ?, ?)
+    """,
+    (
+        match["url"],
+        match["home_team"],
+        match["away_team"],
+        int(score[0]),
+        int(score[1]),
+        match["referee"]
+    ))
+
+    conn.commit()
+    conn.close()
 
 async def get_text(element, selector: str) -> str:
     """Return the text content of a subelement or empty string if not found."""
@@ -124,17 +168,6 @@ async def parse_match(page, match_url, referee_stats):
 
         print("Referee: ", referee)
 
-        if referee not in referee_stats:
-            referee_stats[referee] = {"games": 0, "yellow": 0, "red": 0}
-
-        referee_stats[referee]["games"] += 1
-        referee_stats[referee]["yellow"] += yellow_card_counter
-        referee_stats[referee]["red"] += red_card_counter
-
-
-        for ref, stats in referee_stats.items():
-            print(f"{ref}: {stats['games']} games, {stats['yellow']} yellows, {stats['red']} reds")
-    
 
     except:
         pass
@@ -207,6 +240,9 @@ async def parse_match(page, match_url, referee_stats):
     }
 
 async def main():
+
+    create_database()
+
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=False)
         page = await browser.new_page(user_agent="Mozilla/5.0 (compatible; MyScraper/1.0)")
@@ -222,6 +258,7 @@ async def main():
             print(f"Scraping match {i+1}/{len(match_links)}: {link}")
             try:
                 data = await parse_match(page, link, referee_stats)
+                save_match(data)
                 all_matches.append(data)
             except Exception as e:
                 print(f"Error scraping {link}: {e}")
