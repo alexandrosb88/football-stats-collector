@@ -3,30 +3,118 @@ import pandas as pd
 import re
 import sqlite3
 from playwright.async_api import async_playwright
+import os
+from datetime import datetime
 
 # CONFIG — change this to your league/championship page
 CHAMPIONSHIP_URL = "https://www.soccerway.com/greece/super-league/results/"  # ← replace with actual URL
 CSV_FILE = "superleague_stats.csv"
 
 
-def create_database():
+
+def get_or_create_team(name, city=None):
+
     conn = sqlite3.connect("football.db")
     cursor = conn.cursor()
 
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS matches (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        url TEXT UNIQUE,
-        home_team TEXT,
-        away_team TEXT,
-        home_goals INTEGER,
-        away_goals INTEGER,
-        referee TEXT
+    # Check whether the team already exists
+    cursor.execute(
+        "SELECT id FROM teams WHERE name = ?",
+        (name,)
     )
-    """)
+
+    result = cursor.fetchone()
+
+    if result:
+        team_id = result[0]
+
+    else:
+        # Team does not exist, so create it
+        cursor.execute(
+            "INSERT INTO teams (name, city) VALUES (?, ?)",
+            (name, city)
+        )
+
+        team_id = cursor.lastrowid
 
     conn.commit()
     conn.close()
+
+    return team_id
+
+
+def add_competition(name):
+    conn = sqlite3.connect("football.db")
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "INSERT OR IGNORE INTO competitions (name) VALUES (?)",
+        (name,)
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def add_season(name):
+    conn = sqlite3.connect("football.db")
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "INSERT OR IGNORE INTO seasons (name) VALUES (?)",
+        (name,)
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def add_competition_stage(competition_id, stage_name):
+    conn = sqlite3.connect("football.db")
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT OR IGNORE INTO competition_stages
+        (competition_id, stage_name)
+        VALUES (?, ?)
+        """,
+        (competition_id, stage_name)
+    )
+
+    conn.commit()
+    conn.close()
+
+def get_or_create_referee(name):
+
+    if not name:
+        return None
+
+    
+    conn = sqlite3.connect("football.db")
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT id FROM referees WHERE name = ?",
+        (name,)
+    )
+
+    result = cursor.fetchone()
+
+    if result:
+        referee_id = result[0]
+    else:
+        cursor.execute(
+            "INSERT INTO referees (name) VALUES (?)",
+            (name,)
+        )
+        referee_id = cursor.lastrowid
+
+    conn.commit()
+    conn.close()
+
+    return referee_id
+
 
 
 def save_match(match):
@@ -87,11 +175,14 @@ async def get_match_links(page, championship_url):
 
     # now extract all match links
     links = await page.eval_on_selector_all(
-        "a[href*='/match/']",
+        "div.event__match a.eventRowLink",
         "els => els.map(el => el.href)"
     )
 
-    print(links)
+    #print(links)
+
+    for link in links:
+        print(link)
 
     return list(set(links))
 
@@ -101,10 +192,50 @@ async def get_match_links(page, championship_url):
 async def parse_match(page, match_url, referee_stats):
     await page.goto(match_url, wait_until="networkidle")
 
-    #Round
-    og_description = await page.get_attribute('meta[property="og:description"]', "content") or ""
+
+    #Date
+    match_datetime_text = await get_text(
+    page,
+    "div.duelParticipant__startTime"
+    )
+
+    print("Match Date/Time:", match_datetime_text)
+
+    match_datetime = datetime.strptime(
+        match_datetime_text,
+        "%d.%m.%Y %H:%M"
+    )
+
+    match_date = match_datetime.date()
+
+    print("Match Date:", match_date)
+
+
+    #Matchday
+    og_description = await page.get_attribute(
+    'meta[property="og:description"]',
+    "content"
+    ) or ""
+
     print("Description:", og_description)
 
+    round_match = re.search(r"Round\s+(\d+)", og_description)
+
+    if round_match:
+        matchday = int(round_match.group(1))
+    else:
+        matchday = None
+
+    print("Matchday:", matchday)
+
+
+    # Match Status
+    match_status = await get_text(
+        page,
+        "span.fixedHeaderDuel__detailStatus"
+    )
+
+    print("Match Status:", match_status)
     
 
     # Teams
@@ -112,6 +243,15 @@ async def parse_match(page, match_url, referee_stats):
     "alt")) or ""
     away_team = (await page.get_attribute("div.duelParticipant__away img.participant__image",
     "alt")) or ""
+
+    home_team_id = get_or_create_team(home_team)
+    away_team_id = get_or_create_team(away_team)
+
+    print("Home Team:", home_team)
+    print("Home Team ID:", home_team_id)
+
+    print("Away Team:", away_team)
+    print("Away Team ID:", away_team_id)
 
     print ("Home Team: " + home_team + " vs Away Team: " + away_team)
 
@@ -171,6 +311,8 @@ async def parse_match(page, match_url, referee_stats):
 
     except:
         pass
+
+    referee_id = get_or_create_referee(referee)
 
     # Stats — navigate to the dedicated stats subpage
     match_stats = {}
@@ -241,7 +383,6 @@ async def parse_match(page, match_url, referee_stats):
 
 async def main():
 
-    create_database()
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=False)
@@ -292,5 +433,16 @@ async def main():
     print(f"Saved to {CSV_FILE}")
 
 if __name__ == "__main__":
+
+    add_competition("Super League")
+    add_competition("Greek Cup")
+
+    print("Competitions added.")
+
+    add_season("2025/2026")
+    add_season("2026/2027")
+
+    print("Seasons added.")
+
     asyncio.run(main())
 

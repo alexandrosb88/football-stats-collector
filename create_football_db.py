@@ -11,7 +11,7 @@ def create_database():
         CREATE TABLE IF NOT EXISTS teams (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE,
-            city TEXT NOT NULL
+            city TEXT
         )
     """)
 
