@@ -43,6 +43,32 @@ def get_or_create_team(name, city=None):
     return team_id
 
 
+def get_or_create_competition(name):
+    conn = sqlite3.connect("football.db")
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT id FROM competitions WHERE name = ?",
+        (name,)
+    )
+
+    result = cursor.fetchone()
+
+    if result:
+        competition_id = result[0]
+    else:
+        cursor.execute(
+            "INSERT INTO competitions (name) VALUES (?)",
+            (name,)
+        )
+        competition_id = cursor.lastrowid
+
+    conn.commit()
+    conn.close()
+
+    return competition_id 
+
+
 def add_competition(name):
     conn = sqlite3.connect("football.db")
     cursor = conn.cursor()
@@ -56,6 +82,32 @@ def add_competition(name):
     conn.close()
 
 
+def get_or_create_season(name):
+    conn = sqlite3.connect("football.db")
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT id FROM seasons WHERE name = ?",
+        (name,)
+    )
+
+    result = cursor.fetchone()
+
+    if result:
+        season_id = result[0]
+    else:
+        cursor.execute(
+            "INSERT INTO seasons (name) VALUES (?)",
+            (name,)
+        )
+        season_id = cursor.lastrowid
+
+    conn.commit()
+    conn.close()
+
+    return season_id   
+
+
 def add_season(name):
     conn = sqlite3.connect("football.db")
     cursor = conn.cursor()
@@ -67,6 +119,8 @@ def add_season(name):
 
     conn.commit()
     conn.close()
+
+ 
 
 
 def add_competition_stage(competition_id, stage_name):
@@ -118,28 +172,87 @@ def get_or_create_referee(name):
 
 
 def save_match(match):
-
     conn = sqlite3.connect("football.db")
     cursor = conn.cursor()
 
-    score = match["score"].split("-")
-
     cursor.execute("""
-    INSERT OR IGNORE INTO matches
-    (url, home_team, away_team, home_goals, away_goals, referee)
-    VALUES (?, ?, ?, ?, ?, ?)
-    """,
-    (
-        match["url"],
-        match["home_team"],
-        match["away_team"],
-        int(score[0]),
-        int(score[1]),
-        match["referee"]
+        INSERT INTO matches (
+            match_date,
+            season_id,
+            matchday,
+            match_status,
+            home_team_id,
+            away_team_id,
+            home_score,
+            away_score,
+            competition_id,
+            stage_id,
+            referee_id
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        match["match_date"],
+        match["season_id"],
+        match["matchday"],
+        match["match_status"],
+        match["home_team_id"],
+        match["away_team_id"],
+        match["home_score"],
+        match["away_score"],
+        match["competition_id"],
+        match["stage_id"],
+        match["referee_id"]
     ))
 
     conn.commit()
+
+    match_id = cursor.lastrowid
+
     conn.close()
+
+    return match_id
+
+
+
+def save_events(match_id, events):
+    conn = sqlite3.connect("football.db")
+    cursor = conn.cursor()
+
+    for event in events:
+        cursor.execute("""
+            INSERT INTO events (
+                match_id,
+                team_id,
+                player_id,
+                second_player_id,
+                minute,
+                added_time,
+                period,
+                event_type,
+                event_detail,
+                home_score,
+                away_score
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            match_id,
+            event["team_id"],
+            event["player_id"],
+            event["second_player_id"],
+            event["minute"],
+            event["added_time"],
+            event["period"],
+            event["event_type"],
+            event["event_detail"],
+            event["home_score"],
+            event["away_score"]
+        ))
+
+    conn.commit()
+    conn.close()
+
+
+
 
 async def get_text(element, selector: str) -> str:
     """Return the text content of a subelement or empty string if not found."""
@@ -189,7 +302,13 @@ async def get_match_links(page, championship_url):
 
   
 
-async def parse_match(page, match_url, referee_stats):
+async def parse_match(
+    page,
+    match_url,
+    competition_id,
+    season_id,
+    stage_id
+        ):
     await page.goto(match_url, wait_until="networkidle")
 
 
@@ -268,37 +387,171 @@ async def parse_match(page, match_url, referee_stats):
     yellow_card_counter = 0
     red_card_counter = 0
     
-    
+    # Events (goals, cards, etc.)
+    events = []
+
     home_incidents = (await page.query_selector_all("div.smv__participantRow.smv__homeParticipant"))
     print(f"Found {len(home_incidents)} home incidents")
 
 
     for incident in home_incidents:
 
-                print("\n entering home incidents loop")
+        time = await get_text(incident, "div.smv__timeBox")
+        player = await get_text(incident, "a.smv__playerName")
+        player_out = await get_text(
+            incident,
+            "a.smv__subDown.smv__playerName"
+        )
 
-                time = await get_text(incident, "div.smv__timeBox")
-                player = await get_text(incident, "a.smv__playerName")
-                player_out = await get_text(incident, "a.smv__subDown.smv__playerName")
-                svg_title = await get_text(incident, "div.smv__incidentIcon svg title")
-                svg_title_substitution = await get_text(incident, "div.smv__incidentIconSub svg title")
+        svg_title = await get_text(
+            incident,
+            "div.smv__incidentIcon svg title"
+        )
 
+        svg_title_substitution = await get_text(
+            incident,
+            "div.smv__incidentIconSub svg title"
+        )
 
-                if "Yellow Card" in svg_title:
-                    print(f"{time} - Yellow Card - {player}")
-                    yellow_card_counter +=1
-                    print(yellow_card_counter)
+        if "Yellow Card" in svg_title:
 
-                elif "Red Card" in svg_title:
-                    print(f"{time} - Red Card - {player}")
-                    red_card_counter +=1
-                    print(red_card_counter)
+            print(f"{time} - Yellow Card - {player}")
 
-                elif "Substitution" in svg_title_substitution:
-                    print(f"{time} - player in {player} - player out {player_out}")
+            yellow_card_counter += 1
+
+            events.append({
+                "team_id": home_team_id,
+                "player_id": None,
+                "second_player_id": None,
+                "minute": time,
+                "added_time": None,
+                "period": None,
+                "event_type": "card",
+                "event_detail": "yellow",
+                "home_score": home_goals,
+                "away_score": away_goals
+            })
+
+        elif "Red Card" in svg_title:
+
+            print(f"{time} - Red Card - {player}")
+
+            red_card_counter += 1
+
+            events.append({
+                "team_id": home_team_id,
+                "player_id": None,
+                "second_player_id": None,
+                "minute": time,
+                "added_time": None,
+                "period": None,
+                "event_type": "card",
+                "event_detail": "red",
+                "home_score": home_goals,
+                "away_score": away_goals
+            })
+
+        elif "Substitution" in svg_title_substitution:
+
+            print(
+                f"{time} - player in {player} - player out {player_out}"
+            )
+
+            events.append({
+                "team_id": home_team_id,
+                "player_id": None,
+                "second_player_id": None,
+                "minute": time,
+                "added_time": None,
+                "period": None,
+                "event_type": "substitution",
+                "event_detail": None,
+                "home_score": home_goals,
+                "away_score": away_goals
+            })
 
                 
-                          
+    away_incidents = await page.query_selector_all(
+    "div.smv__participantRow.smv__awayParticipant"
+)
+
+    print(f"Found {len(away_incidents)} away incidents")
+
+    for incident in away_incidents:
+
+        time = await get_text(incident, "div.smv__timeBox")
+        player = await get_text(incident, "a.smv__playerName")
+        player_out = await get_text(
+            incident,
+            "a.smv__subDown.smv__playerName"
+        )
+
+        svg_title = await get_text(
+            incident,
+            "div.smv__incidentIcon svg title"
+        )
+
+        svg_title_substitution = await get_text(
+            incident,
+            "div.smv__incidentIconSub svg title"
+        )
+
+        if "Yellow Card" in svg_title:
+
+            print(f"{time} - Yellow Card - {player}")
+
+            yellow_card_counter += 1
+
+            events.append({
+                "team_id": away_team_id,
+                "player_id": None,
+                "second_player_id": None,
+                "minute": time,
+                "added_time": None,
+                "period": None,
+                "event_type": "card",
+                "event_detail": "yellow",
+                "home_score": home_goals,
+                "away_score": away_goals
+            })
+
+        elif "Red Card" in svg_title:
+
+            print(f"{time} - Red Card - {player}")
+
+            red_card_counter += 1
+
+            events.append({
+                "team_id": away_team_id,
+                "player_id": None,
+                "second_player_id": None,
+                "minute": time,
+                "added_time": None,
+                "period": None,
+                "event_type": "card",
+                "event_detail": "red",
+                "home_score": home_goals,
+                "away_score": away_goals
+            })
+
+        elif "Substitution" in svg_title_substitution:
+
+            print(
+                f"{time} - player in {player} - player out {player_out}"
+            )
+
+            events.append({
+                "team_id": away_team_id,
+                "player_id": None,
+                "second_player_id": None,
+                "minute": time,
+                "added_time": None,
+                "period": None,
+                "event_type": "substitution",
+                "event_detail": None,
+                "home_score": home_goals,
+                "away_score": away_goals
+            })                      
 
     # Referee
     referee = ""
@@ -345,17 +598,6 @@ async def parse_match(page, match_url, referee_stats):
     except Exception as e:
         print(f"Stats error: {e}")
 
-    # Events (goals, cards, etc.)
-    events = []
-    # Example: rows in a container of events
-    for row in await page.query_selector_all("div.events-container tr"):
-        try:
-            minute = await row.query_selector_eval("td.minute", "el => el.innerText")
-            player = await row.query_selector_eval("td.player", "el => el.innerText")
-            detail = await row.query_selector_eval("td.event-type", "el => el.innerText")
-            events.append({"minute": minute.strip(), "player": player.strip(), "detail": detail.strip()})
-        except:
-            continue
 
     # Team stats
     stats = {}
@@ -372,16 +614,38 @@ async def parse_match(page, match_url, referee_stats):
             continue
 
     return {
-        "home_team": home_team.strip(),
-        "away_team": away_team.strip(),
-        "score": score.strip(),
-        "referee": referee,
+        "home_team_id": home_team_id,
+        "away_team_id": away_team_id,
+
+        "home_score": home_goals,
+        "away_score": away_goals,
+
+        "match_date": match_date,
+        "matchday": matchday,
+        "match_status": match_status,
+
+        "referee_id": referee_id,
+
+        "season_id": season_id,
+        "competition_id": competition_id,
+        "stage_id": stage_id,
+
         "events": events,
         "stats": stats,
+
         "url": match_url
     }
 
 async def main():
+
+
+    competition_id = get_or_create_competition("Super League")
+    season_id = get_or_create_season("2026/2027")
+    stage_id = None
+
+    print("Competition ID:", competition_id)
+    print("Season ID:", season_id)
+    print("Stage ID:", stage_id)
 
 
     async with async_playwright() as p:
@@ -392,15 +656,26 @@ async def main():
         match_links = await get_match_links(page, CHAMPIONSHIP_URL)
         print(f"Found {len(match_links)} matches")
 
-        referee_stats = {}
-
         all_matches = []
         for i, link in enumerate(match_links):
             print(f"Scraping match {i+1}/{len(match_links)}: {link}")
             try:
-                data = await parse_match(page, link, referee_stats)
-                save_match(data)
+                data = await parse_match(
+                                page,
+                                link,
+                                competition_id,
+                                season_id,
+                                stage_id
+                            )
+
+                match_id = save_match(data)
+                print("Saved Match ID:", match_id)
+
+                save_events(match_id, data["events"])
+                print("Events saved.")
+
                 all_matches.append(data)
+
             except Exception as e:
                 print(f"Error scraping {link}: {e}")
 
@@ -433,16 +708,6 @@ async def main():
     print(f"Saved to {CSV_FILE}")
 
 if __name__ == "__main__":
-
-    add_competition("Super League")
-    add_competition("Greek Cup")
-
-    print("Competitions added.")
-
-    add_season("2025/2026")
-    add_season("2026/2027")
-
-    print("Seasons added.")
 
     asyncio.run(main())
 
