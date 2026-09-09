@@ -87,11 +87,14 @@ def create_database():
             position TEXT,
             starter BOOLEAN,
             substitutions BOOLEAN,
+            formation_row INTEGER,
+            formation_order INTEGER,
+            rating REAL,
             FOREIGN KEY (match_id) REFERENCES matches(id),
             FOREIGN KEY (team_id) REFERENCES teams(id),
             FOREIGN KEY (player_id) REFERENCES players(id)
-        )
-    """)
+            )
+        """)
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS events (

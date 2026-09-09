@@ -43,6 +43,35 @@ def get_or_create_team(name, city=None):
     return team_id
 
 
+def get_or_create_player(name):
+    if not name:
+        return None
+
+    conn = sqlite3.connect("football.db")
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT id FROM players WHERE name = ?",
+        (name,)
+    )
+
+    result = cursor.fetchone()
+
+    if result:
+        player_id = result[0]
+    else:
+        cursor.execute(
+            "INSERT INTO players (name) VALUES (?)",
+            (name,)
+        )
+        player_id = cursor.lastrowid
+
+    conn.commit()
+    conn.close()
+
+    return player_id
+
+
 def get_or_create_competition(name):
     conn = sqlite3.connect("football.db")
     cursor = conn.cursor()
@@ -252,6 +281,38 @@ def save_events(match_id, events):
     conn.close()
 
 
+def save_lineups(match_id, lineups):
+    conn = sqlite3.connect("football.db")
+    cursor = conn.cursor()
+
+    for lineup in lineups:
+        cursor.execute("""
+            INSERT INTO lineups (
+                match_id,
+                team_id,
+                player_id,
+                position,
+                starter,
+                substitutions,
+                formation_row,
+                formation_order,
+                rating
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            match_id,
+            lineup["team_id"],
+            lineup["player_id"],
+            lineup["position"],
+            lineup["starter"],
+            lineup["substitutions"],
+            lineup["formation_row"],
+            lineup["formation_order"],
+            lineup["rating"]
+        ))
+
+    conn.commit()
+    conn.close()
 
 
 async def get_text(element, selector: str) -> str:
@@ -567,6 +628,34 @@ async def parse_match(
 
     referee_id = get_or_create_referee(referee)
 
+    # Lineups — navigate to the lineup subpage
+    base_url = match_url.split("?")[0].rstrip("/")
+    mid = match_url.split("mid=")[-1] if "mid=" in match_url else ""
+
+    lineups_url = f"{base_url}/summary/lineups/" + (
+        f"?mid={mid}" if mid else ""
+    )
+
+    print(f"Navigating to lineups page: {lineups_url}")
+
+    await page.goto(
+    lineups_url,
+    wait_until="domcontentloaded"
+    )
+
+    await page.wait_for_selector(
+        "[data-testid='wcl-lineupsGroup']",
+        timeout=10000
+    )
+
+    lineups = await parse_lineups(
+        page,
+        home_team_id,
+        away_team_id
+    )
+
+    print(f"Total lineup players found: {len(lineups)}")
+
     # Stats — navigate to the dedicated stats subpage
     match_stats = {}
     try:
@@ -630,11 +719,122 @@ async def parse_match(
         "competition_id": competition_id,
         "stage_id": stage_id,
 
+        "lineups": lineups,
         "events": events,
         "stats": stats,
 
         "url": match_url
     }
+
+
+async def parse_lineups(page, home_team_id, away_team_id):
+
+    lineups = []
+
+    lineup_groups = await page.query_selector_all(
+        "[data-testid='wcl-lineupsGroup']"
+    )
+
+    print(f"Found {len(lineup_groups)} lineup groups")
+
+    for group in lineup_groups:
+
+        # Read the lineup group header
+        header = await get_text(
+            group,
+            "[data-testid='wcl-headerSection-text']"
+        )
+
+        print("Lineup group:", header)
+
+        # Starting Lineups
+        if "Starting Lineups" in header:
+            starter = 1
+
+        # Substitutes
+        elif "Substitutes" in header:
+            starter = 0
+
+        else:
+            continue
+
+        # -------------------------
+        # HOME TEAM
+        # -------------------------
+
+        home_players = await group.query_selector_all(
+            "[data-testid='wcl-lineupsParticipantGeneral-left']"
+        )
+
+        print(f"Home players: {len(home_players)}")
+
+        for player in home_players:
+
+            player_name = await get_text(
+                player,
+                ".wcl-name_ZggyJ"
+            )
+
+            if not player_name:
+                continue
+
+            player_id = get_or_create_player(player_name)
+
+            lineups.append({
+                "team_id": home_team_id,
+                "player_id": player_id,
+                "position": None,
+                "starter": starter,
+                "substitutions": False,
+                "formation_row": None,
+                "formation_order": None,
+                "rating": None
+            })
+
+            print(
+                f"Home - {player_name} "
+                f"(Player ID: {player_id}, Starter: {starter})"
+            )
+
+        # -------------------------
+        # AWAY TEAM
+        # -------------------------
+
+        away_players = await group.query_selector_all(
+            "[data-testid='wcl-lineupsParticipantGeneral-right']"
+        )
+
+        print(f"Away players: {len(away_players)}")
+
+        for player in away_players:
+
+            player_name = await get_text(
+                player,
+                ".wcl-name_ZggyJ"
+            )
+
+            if not player_name:
+                continue
+
+            player_id = get_or_create_player(player_name)
+
+            lineups.append({
+                "team_id": away_team_id,
+                "player_id": player_id,
+                "position": None,
+                "starter": starter,
+                "substitutions": False,
+                "formation_row": None,
+                "formation_order": None,
+                "rating": None
+            })
+
+            print(
+                f"Away - {player_name} "
+                f"(Player ID: {player_id}, Starter: {starter})"
+            )
+
+    return lineups
 
 async def main():
 
@@ -674,38 +874,15 @@ async def main():
                 save_events(match_id, data["events"])
                 print("Events saved.")
 
+                save_lineups(match_id, data["lineups"])
+                print("Lineups saved.")
+
                 all_matches.append(data)
 
             except Exception as e:
                 print(f"Error scraping {link}: {e}")
 
         await browser.close()
-
-    # Flatten for CSV
-    rows = []
-    for match in all_matches:
-        base = {
-            "home_team": match["home_team"],
-            "away_team": match["away_team"],
-            "score": match["score"],
-            "referee": match["referee"],
-            "url": match["url"]
-        }
-        for ev in match["events"]:
-            row = base.copy()
-            row.update({
-                "event_minute": ev["minute"],
-                "event_player": ev["player"],
-                "event_detail": ev["detail"]
-            })
-            for stat_name, vals in match["stats"].items():
-                row[f"{stat_name}_home"] = vals["home"]
-                row[f"{stat_name}_away"] = vals["away"]
-            rows.append(row)
-
-    df = pd.DataFrame(rows)
-    df.to_csv(CSV_FILE, index=False)
-    print(f"Saved to {CSV_FILE}")
 
 if __name__ == "__main__":
 
