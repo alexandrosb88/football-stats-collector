@@ -451,7 +451,7 @@ async def parse_match(
     # Events (goals, cards, etc.)
     events = []
 
-    home_incidents = (await page.query_selector_all("div.smv__participantRow.smv__homeParticipant"))
+    home_incidents = (await page.query_selector_all("li.smv__participantRow.smv__homeParticipant"))
     print(f"Found {len(home_incidents)} home incidents")
 
 
@@ -469,12 +469,52 @@ async def parse_match(
             "div.smv__incidentIcon svg title"
         )
 
+        svg_title = await get_text(
+            incident,
+            "div.smv__incidentIcon svg title"
+        )
+                
+        svg = await incident.query_selector(
+            "div.smv__incidentIcon svg"
+        )
+        
+        incident_icon = None
+        svg_class = None
+        
+        if svg:
+            incident_icon = await svg.get_attribute("data-testid")
+            svg_class = await svg.get_attribute("class")
+
         svg_title_substitution = await get_text(
             incident,
             "div.smv__incidentIconSub svg title"
         )
 
-        if "Yellow Card" in svg_title:
+
+        if incident_icon == "wcl-icon-incidents-goal-soccer":
+
+            if "footballOwnGoal-ico" in (svg_class or ""):
+                event_detail = "own_goal"
+            else:
+                event_detail = "normal"
+
+            print(f"{time} - Goal - {player} - {event_detail}")
+
+            events.append({
+                "team_id": home_team_id,
+                "player_id": None,
+                "second_player_id": None,
+                "minute": time,
+                "added_time": None,
+                "period": None,
+                "event_type": "goal",
+                "event_detail": event_detail,
+                "home_score": home_goals,
+                "away_score": away_goals
+            })
+
+
+        elif "yellowCard-ico" in (svg_class or ""):
 
             print(f"{time} - Yellow Card - {player}")
 
@@ -493,7 +533,8 @@ async def parse_match(
                 "away_score": away_goals
             })
 
-        elif "Red Card" in svg_title:
+
+        elif "redCard-ico" in (svg_class or ""):
 
             print(f"{time} - Red Card - {player}")
 
@@ -512,7 +553,8 @@ async def parse_match(
                 "away_score": away_goals
             })
 
-        elif "Substitution" in svg_title_substitution:
+
+        elif "Substitution" in (svg_title_substitution or ""):
 
             print(
                 f"{time} - player in {player} - player out {player_out}"
@@ -531,9 +573,27 @@ async def parse_match(
                 "away_score": away_goals
             })
 
+
+        elif incident_icon == "wcl-icon-incidents-penalty-missed":
+
+            print(f"{time} - Penalty missed - {player}")
+
+            events.append({
+                "team_id": home_team_id,
+                "player_id": None,
+                "second_player_id": None,
+                "minute": time,
+                "added_time": None,
+                "period": None,
+                "event_type": "penalty",
+                "event_detail": "missed",
+                "home_score": home_goals,
+                "away_score": away_goals
+            })
+
                 
     away_incidents = await page.query_selector_all(
-    "div.smv__participantRow.smv__awayParticipant"
+    "li.smv__participantRow.smv__awayParticipant"
 )
 
     print(f"Found {len(away_incidents)} away incidents")
@@ -548,23 +608,58 @@ async def parse_match(
         )
 
         svg_title = await get_text(
-            incident,
-            "div.smv__incidentIcon svg title"
-        )
+                    incident,
+                    "div.smv__incidentIcon svg title"
+                )
+        
+        svg = await incident.query_selector(
+                "div.smv__incidentIcon svg"
+            )
 
+        incident_icon = None
+        svg_class = None
+
+        if svg:
+            incident_icon = await svg.get_attribute("data-testid")
+            svg_class = await svg.get_attribute("class")
+        
         svg_title_substitution = await get_text(
-            incident,
-            "div.smv__incidentIconSub svg title"
-        )
+                    incident,
+                    "div.smv__incidentIconSub svg title"
+                )
 
-        if "Yellow Card" in svg_title:
+
+        if incident_icon == "wcl-icon-incidents-goal-soccer":
+
+            if "footballOwnGoal-ico" in (svg_class or ""):
+                event_detail = "own_goal"
+            else:
+                event_detail = "normal"
+
+            print(f"{time} - Goal - {player} - {event_detail}")
+
+            events.append({
+                "team_id": home_team_id,
+                "player_id": None,
+                "second_player_id": None,
+                "minute": time,
+                "added_time": None,
+                "period": None,
+                "event_type": "goal",
+                "event_detail": event_detail,
+                "home_score": home_goals,
+                "away_score": away_goals
+            })
+
+
+        elif "yellowCard-ico" in (svg_class or ""):
 
             print(f"{time} - Yellow Card - {player}")
 
             yellow_card_counter += 1
 
             events.append({
-                "team_id": away_team_id,
+                "team_id": home_team_id,
                 "player_id": None,
                 "second_player_id": None,
                 "minute": time,
@@ -576,14 +671,15 @@ async def parse_match(
                 "away_score": away_goals
             })
 
-        elif "Red Card" in svg_title:
+
+        elif "redCard-ico" in (svg_class or ""):
 
             print(f"{time} - Red Card - {player}")
 
             red_card_counter += 1
 
             events.append({
-                "team_id": away_team_id,
+                "team_id": home_team_id,
                 "player_id": None,
                 "second_player_id": None,
                 "minute": time,
@@ -595,14 +691,15 @@ async def parse_match(
                 "away_score": away_goals
             })
 
-        elif "Substitution" in svg_title_substitution:
+
+        elif "Substitution" in (svg_title_substitution or ""):
 
             print(
                 f"{time} - player in {player} - player out {player_out}"
             )
 
             events.append({
-                "team_id": away_team_id,
+                "team_id": home_team_id,
                 "player_id": None,
                 "second_player_id": None,
                 "minute": time,
@@ -612,7 +709,25 @@ async def parse_match(
                 "event_detail": None,
                 "home_score": home_goals,
                 "away_score": away_goals
-            })                      
+            })
+
+
+        elif incident_icon == "wcl-icon-incidents-penalty-missed":
+
+            print(f"{time} - Penalty missed - {player}")
+
+            events.append({
+                "team_id": home_team_id,
+                "player_id": None,
+                "second_player_id": None,
+                "minute": time,
+                "added_time": None,
+                "period": None,
+                "event_type": "penalty",
+                "event_detail": "missed",
+                "home_score": home_goals,
+                "away_score": away_goals
+            })
 
     # Referee
     referee = ""
@@ -870,6 +985,12 @@ async def main():
 
                 match_id = save_match(data)
                 print("Saved Match ID:", match_id)
+
+                print("EVENTS FOUND:", len(data["events"]))
+                print("EVENT DATA:", data["events"])
+
+                save_events(match_id, data["events"])
+                print("Events saved.")
 
                 save_events(match_id, data["events"])
                 print("Events saved.")
