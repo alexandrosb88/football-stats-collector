@@ -254,6 +254,7 @@ def save_events(match_id, events):
                 team_id,
                 player_id,
                 second_player_id,
+                assist_player_id,
                 minute,
                 added_time,
                 period,
@@ -268,6 +269,7 @@ def save_events(match_id, events):
             event["team_id"],
             event["player_id"],
             event["second_player_id"],
+            event["assist_player_id"],
             event["minute"],
             event["added_time"],
             event["period"],
@@ -458,11 +460,50 @@ async def parse_match(
     for incident in home_incidents:
 
         time = await get_text(incident, "div.smv__timeBox")
+
+        minute = None
+        added_time = 0
+
+        if time:
+            time_clean = time.replace("'", "").strip()
+
+            if "+" in time_clean:
+                parts = time_clean.split("+")
+                minute = int(parts[0])
+                added_time = int(parts[1])
+            else:
+                minute = int(time_clean)
+
+        print(f"Raw time: {time} → Minute: {minute}, Added time: {added_time}")
+
         player = await get_text(incident, "a.smv__playerName")
+
+        player_id = None
+        
+        if player:
+            player_id = get_or_create_player(player)
+
+        assist_player = await get_text(
+            incident,
+            "div.smv__assist a"
+        )
+
+        assist_player_id = None
+
+        if assist_player:
+            assist_player_id = get_or_create_player(assist_player)
+
+
         player_out = await get_text(
             incident,
             "a.smv__subDown.smv__playerName"
         )
+
+        second_player_id = None
+
+        if player_out:
+            second_player_id = get_or_create_player(player_out)
+
 
         svg_title = await get_text(
             incident,
@@ -502,10 +543,11 @@ async def parse_match(
 
             events.append({
                 "team_id": home_team_id,
-                "player_id": None,
-                "second_player_id": None,
-                "minute": time,
-                "added_time": None,
+                "player_id": player_id,
+                "second_player_id": second_player_id,
+                "assist_player_id": assist_player_id,
+                "minute": minute,
+                "added_time": added_time,
                 "period": None,
                 "event_type": "goal",
                 "event_detail": event_detail,
@@ -522,10 +564,11 @@ async def parse_match(
 
             events.append({
                 "team_id": home_team_id,
-                "player_id": None,
+                "player_id": player_id,
+                "assist_player_id": None,
                 "second_player_id": None,
-                "minute": time,
-                "added_time": None,
+                "minute": minute,
+                "added_time": added_time,
                 "period": None,
                 "event_type": "card",
                 "event_detail": "yellow",
@@ -542,10 +585,11 @@ async def parse_match(
 
             events.append({
                 "team_id": home_team_id,
-                "player_id": None,
+                "player_id": player_id,
                 "second_player_id": None,
-                "minute": time,
-                "added_time": None,
+                "assist_player_id": None,
+                "minute": minute,
+                "added_time": added_time,
                 "period": None,
                 "event_type": "card",
                 "event_detail": "red",
@@ -562,10 +606,11 @@ async def parse_match(
 
             events.append({
                 "team_id": home_team_id,
-                "player_id": None,
-                "second_player_id": None,
-                "minute": time,
-                "added_time": None,
+                "player_id": player_id,
+                "second_player_id": second_player_id,
+                "assist_player_id": None,
+                "minute": minute,
+                "added_time": added_time,
                 "period": None,
                 "event_type": "substitution",
                 "event_detail": None,
@@ -580,10 +625,11 @@ async def parse_match(
 
             events.append({
                 "team_id": home_team_id,
-                "player_id": None,
+                "player_id": player_id,
                 "second_player_id": None,
-                "minute": time,
-                "added_time": None,
+                "assist_player_id": None,
+                "minute": minute,
+                "added_time": added_time,
                 "period": None,
                 "event_type": "penalty",
                 "event_detail": "missed",
@@ -600,12 +646,57 @@ async def parse_match(
 
     for incident in away_incidents:
 
-        time = await get_text(incident, "div.smv__timeBox")
+        time = await get_text(
+            incident,
+            "div.smv__timeBox"
+        )
+
+        minute = None
+        added_time = 0
+
+        if time:
+            time_clean = time.replace("'", "").strip()
+
+            if "+" in time_clean:
+                parts = time_clean.split("+")
+                minute = int(parts[0])
+                added_time = int(parts[1])
+            else:
+                minute = int(time_clean)
+
+        print(
+            f"Raw time: {time} → "
+            f"Minute: {minute}, Added time: {added_time}"
+        )
+
+        
         player = await get_text(incident, "a.smv__playerName")
+
+        player_id = None
+
+        if player:
+            player_id = get_or_create_player(player)
+
+
+        assist_player = await get_text(
+            incident,
+            "div.smv__assist a"
+        )
+
+        assist_player_id = None
+
+        if assist_player:
+            assist_player_id = get_or_create_player(assist_player)
+
         player_out = await get_text(
             incident,
             "a.smv__subDown.smv__playerName"
         )
+        
+        second_player_id = None
+
+        if player_out:
+            second_player_id = get_or_create_player(player_out)
 
         svg_title = await get_text(
                     incident,
@@ -640,10 +731,11 @@ async def parse_match(
 
             events.append({
                 "team_id": home_team_id,
-                "player_id": None,
+                "player_id": player_id,
                 "second_player_id": None,
-                "minute": time,
-                "added_time": None,
+                "assist_player_id": assist_player_id,
+                "minute": minute,
+                "added_time": added_time,
                 "period": None,
                 "event_type": "goal",
                 "event_detail": event_detail,
@@ -660,10 +752,11 @@ async def parse_match(
 
             events.append({
                 "team_id": home_team_id,
-                "player_id": None,
+                "player_id": player_id,
                 "second_player_id": None,
-                "minute": time,
-                "added_time": None,
+                "assist_player_id": None,
+                "minute": minute,
+                "added_time": added_time,
                 "period": None,
                 "event_type": "card",
                 "event_detail": "yellow",
@@ -680,10 +773,11 @@ async def parse_match(
 
             events.append({
                 "team_id": home_team_id,
-                "player_id": None,
+                "player_id": player_id,
                 "second_player_id": None,
-                "minute": time,
-                "added_time": None,
+                "assist_player_id": None,
+                "minute": minute,
+                "added_time": added_time,
                 "period": None,
                 "event_type": "card",
                 "event_detail": "red",
@@ -700,10 +794,11 @@ async def parse_match(
 
             events.append({
                 "team_id": home_team_id,
-                "player_id": None,
-                "second_player_id": None,
-                "minute": time,
-                "added_time": None,
+                "player_id": player_id,
+                "second_player_id": second_player_id,
+                "assist_player_id": None,
+                "minute": minute,
+                "added_time": added_time,
                 "period": None,
                 "event_type": "substitution",
                 "event_detail": None,
@@ -718,10 +813,11 @@ async def parse_match(
 
             events.append({
                 "team_id": home_team_id,
-                "player_id": None,
+                "player_id": player_id,
                 "second_player_id": None,
-                "minute": time,
-                "added_time": None,
+                "assist_player_id": None,
+                "minute": minute,
+                "added_time": added_time,
                 "period": None,
                 "event_type": "penalty",
                 "event_detail": "missed",

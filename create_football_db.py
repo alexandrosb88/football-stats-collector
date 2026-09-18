@@ -103,6 +103,7 @@ def create_database():
             team_id INTEGER,
             player_id INTEGER,
             second_player_id INTEGER,
+            assist_player_id INTEGER,
             minute INTEGER,
             added_time INTEGER,
             period TEXT,
@@ -114,6 +115,7 @@ def create_database():
             FOREIGN KEY (team_id) REFERENCES teams(id),
             FOREIGN KEY (player_id) REFERENCES players(id),
             FOREIGN KEY (second_player_id) REFERENCES players(id)
+            FOREIGN KEY (assist_player_id) REFERENCES players(id)
         )
     """)
 
