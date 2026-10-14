@@ -5,6 +5,8 @@ import sqlite3
 from playwright.async_api import async_playwright
 import os
 from datetime import datetime
+from urllib.parse import urlparse, parse_qs
+import re
 
 # CONFIG — change this to your league/championship page
 CHAMPIONSHIP_URL = "https://www.soccerway.com/greece/super-league/results/"  # ← replace with actual URL
@@ -263,7 +265,7 @@ def save_events(match_id, events):
                 home_score,
                 away_score
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             match_id,
             event["team_id"],
@@ -315,6 +317,48 @@ def save_lineups(match_id, lineups):
 
     conn.commit()
     conn.close()
+
+
+
+def save_team_stats(match_id, team_stats):
+    conn = sqlite3.connect("football.db")
+    cursor = conn.cursor()
+
+    try:
+        for stat in team_stats:
+            cursor.execute("""
+                INSERT INTO team_stats (
+                    match_id,
+                    team_id,
+                    stat_name,
+                    stat_value,
+                    period
+                )
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (
+                    match_id,
+                    team_id,
+                    stat_name,
+                    period
+                )
+                DO UPDATE SET
+                    stat_value = excluded.stat_value
+            """, (
+                match_id,
+                stat["team_id"],
+                stat["stat_name"],
+                stat["stat_value"],
+                stat["period"]
+            ))
+
+        conn.commit()
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        conn.close()
 
 
 async def get_text(element, selector: str) -> str:
@@ -373,6 +417,26 @@ async def parse_match(
     stage_id
         ):
     await page.goto(match_url, wait_until="networkidle")
+
+
+
+    #Get Team stats links
+    parsed_url = urlparse(match_url)
+
+    mid = parse_qs(parsed_url.query).get("mid", [None])[0]
+
+    # Build the base URL without the existing query string
+    base_url = match_url.split("?")[0].rstrip("/")
+
+    stats_urls = {
+        "full_match": f"{base_url}/summary/stats/overall/" + (f"?mid={mid}" if mid else ""),
+        "first_half": f"{base_url}/summary/stats/1st-half/" + (f"?mid={mid}" if mid else ""),
+        "second_half": f"{base_url}/summary/stats/2nd-half/" + (f"?mid={mid}" if mid else ""),
+    }
+
+    print("Full-match stats URL:", stats_urls["full_match"])
+
+
 
 
     #Date
@@ -867,51 +931,46 @@ async def parse_match(
 
     print(f"Total lineup players found: {len(lineups)}")
 
-    # Stats — navigate to the dedicated stats subpage
-    match_stats = {}
+     
+    # Team stats — navigate to the dedicated stats subpage
+    team_stats = []
+
     try:
-        base_url = match_url.split("?")[0].rstrip("/")
-        mid = match_url.split("mid=")[-1] if "mid=" in match_url else ""
-        stats_url = f"{base_url}/summary/stats/overall/" + (f"?mid={mid}" if mid else "")
+        print("Navigating to full-match team statistics...")
 
-        print(f"Navigating to stats page: {stats_url}")
-        await page.goto(stats_url, wait_until="domcontentloaded")
-        await page.wait_for_selector("[data-testid='wcl-statistics-item']", timeout=8000)
+        await page.goto(
+            stats_urls["full_match"],
+            wait_until="domcontentloaded"
+        )
 
-        stat_rows = await page.query_selector_all("[data-testid='wcl-statistics-item']")
-        print(f"Found {len(stat_rows)} stat rows")
+        await page.wait_for_selector(
+            'div[data-testid="wcl-statistics"]',
+            timeout=15000
+        )
 
-        for row in stat_rows:
-            category_el = await row.query_selector(
-                "[data-testid='wcl-statistics-category'] [data-testid='wcl-scores-simple-text-01']"
-            )
-            category = (await category_el.text_content()).strip() if category_el else ""
+        team_stats = await parse_team_stats(
+            page,
+            home_team_id,
+            away_team_id
+        )
 
-            value_els = await row.query_selector_all("[data-testid='wcl-statistics-value'] span")
-            home_val = (await value_els[0].text_content()).strip() if len(value_els) > 0 else ""
-            away_val = (await value_els[1].text_content()).strip() if len(value_els) > 1 else ""
-
-            if category:
-                match_stats[category] = {"home": home_val, "away": away_val}
-                print(f"  {category}: home={home_val} away={away_val}")
+        print("Team statistic records found:", len(team_stats))
+        print("Team statistics:", team_stats)
 
     except Exception as e:
-        print(f"Stats error: {e}")
+        print(f"Team stats error: {e}")
 
 
-    # Team stats
-    stats = {}
-    for row in await page.query_selector_all("table.team-stats tr"):
-        try:
-            cells = await row.query_selector_all("td")
-            if len(cells) >= 3:
-                stat_name = (await cells[1].text_content()).strip()
-                stats[stat_name] = {
-                    "home": (await cells[0].text_content()).strip(),
-                    "away": (await cells[2].text_content()).strip()
-                }
-        except:
-            continue
+    # Get full-match team statistics
+        await page.goto(stats_urls["full_match"])
+        await page.wait_for_load_state("domcontentloaded")
+    
+        team_stats = await parse_team_stats(
+            page,
+            home_team_id,
+            away_team_id
+        )
+
 
     return {
         "home_team_id": home_team_id,
@@ -932,9 +991,11 @@ async def parse_match(
 
         "lineups": lineups,
         "events": events,
-        "stats": stats,
+        "team_stats": team_stats,
 
-        "url": match_url
+        "url": match_url,
+        "stats_urls": stats_urls
+        
     }
 
 
@@ -1047,6 +1108,142 @@ async def parse_lineups(page, home_team_id, away_team_id):
 
     return lineups
 
+
+
+async def inspect_team_stats(page, stats_url):
+    await page.goto(stats_url, wait_until="domcontentloaded")
+    await page.wait_for_timeout(1500)
+
+    print("\nSTATS URL:", page.url)
+
+    html = await page.locator("body").inner_html()
+    print(html[:12000])
+
+
+
+
+def parse_stat_value(raw_value):
+    if not raw_value:
+        return None
+
+    cleaned = raw_value.strip().replace(",", ".")
+    match = re.search(r"-?\d+(?:\.\d+)?", cleaned)
+
+    if not match:
+        return None
+
+    return float(match.group())
+
+
+async def get_primary_stat_value(element):
+    return await element.evaluate("""
+        el => Array.from(el.childNodes)
+            .filter(node => node.nodeType === Node.TEXT_NODE)
+            .map(node => node.textContent)
+            .join("")
+            .trim()
+    """)
+
+
+async def parse_team_stats(page, home_team_id, away_team_id):
+    stats = []
+    seen = set()
+
+    stat_elements = await page.query_selector_all(
+        'div[data-testid="wcl-statistics"]'
+    )
+
+    for stat in stat_elements:
+        label_element = await stat.query_selector(
+            '[data-testid="wcl-simple-text-01"], '
+            '[data-testid="wcl-scores-heading-04"]'
+        )
+
+        if not label_element:
+            continue
+
+        label = (await label_element.inner_text()).strip()
+
+        if not label or label in seen:
+            continue
+
+        home_element = await stat.query_selector(
+            '.wcl-labelRow_42JBQ > div:first-child '
+            '.wcl-value_Ywp3J'
+        )
+
+        away_element = await stat.query_selector(
+            '.wcl-awayValue_smmfR .wcl-value_Ywp3J'
+        )
+
+        if not home_element or not away_element:
+            continue
+
+        home_raw = await get_primary_stat_value(home_element)
+        away_raw = await get_primary_stat_value(away_element)
+
+        home_value = parse_stat_value(home_raw)
+        away_value = parse_stat_value(away_raw)
+
+        if home_value is None or away_value is None:
+            continue
+
+        seen.add(label)
+
+        stats.append({
+            "team_id": home_team_id,
+            "stat_name": label,
+            "stat_value": home_value,
+            "period": "full_time",
+        })
+
+        stats.append({
+            "team_id": away_team_id,
+            "stat_name": label,
+            "stat_value": away_value,
+            "period": "full_time",
+        })
+
+    return stats
+
+
+
+
+def save_team_stats(match_id, stats):
+    conn = sqlite3.connect("football.db")
+    cursor = conn.cursor()
+
+    try:
+        for stat in stats:
+            cursor.execute("""
+                INSERT INTO team_stats (
+                    match_id,
+                    team_id,
+                    stat_name,
+                    stat_value,
+                    period
+                )
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(match_id, team_id, stat_name, period)
+                DO UPDATE SET
+                    stat_value = excluded.stat_value
+            """, (
+                match_id,
+                stat["team_id"],
+                stat["stat_name"],
+                stat["stat_value"],
+                stat["period"]
+            ))
+
+        conn.commit()
+
+    finally:
+        conn.close()
+
+
+
+
+
 async def main():
 
 
@@ -1085,14 +1282,16 @@ async def main():
                 print("EVENTS FOUND:", len(data["events"]))
                 print("EVENT DATA:", data["events"])
 
+                print("Starting to save events...")
                 save_events(match_id, data["events"])
-                print("Events saved.")
+                print("Events saved successfully!")
 
-                save_events(match_id, data["events"])
-                print("Events saved.")
 
                 save_lineups(match_id, data["lineups"])
                 print("Lineups saved.")
+
+                save_team_stats(match_id, data["team_stats"])
+                print("Team statistics saved:", len(data["team_stats"]))
 
                 all_matches.append(data)
 

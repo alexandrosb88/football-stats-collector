@@ -134,13 +134,16 @@ def create_database():
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS team_stats (
-            match_id INTEGER,
-            team_id INTEGER,
+            match_id INTEGER NOT NULL,
+            team_id INTEGER NOT NULL,
             stat_name TEXT NOT NULL,
             stat_value REAL,
             period TEXT NOT NULL,
+
             FOREIGN KEY (match_id) REFERENCES matches(id),
-            FOREIGN KEY (team_id) REFERENCES teams(id)
+            FOREIGN KEY (team_id) REFERENCES teams(id),
+
+            UNIQUE (match_id, team_id, stat_name, period)
         )
     """)
 
