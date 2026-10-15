@@ -438,6 +438,55 @@ async def parse_match(
 
 
 
+    player_stats_urls = {
+        "top": f"{base_url}/summary/player-stats/top/" + (f"?mid={mid}" if mid else ""),
+        "shots": f"{base_url}/summary/player-stats/shots/" + (f"?mid={mid}" if mid else ""),
+        "attack": f"{base_url}/summary/player-stats/attack/" + (f"?mid={mid}" if mid else ""),
+        "passes": f"{base_url}/summary/player-stats/passes/" + (f"?mid={mid}" if mid else ""),
+        "defense": f"{base_url}/summary/player-stats/defense/" + (f"?mid={mid}" if mid else ""),
+        "goalkeeping": f"{base_url}/summary/player-stats/goalkeeping/" + (f"?mid={mid}" if mid else ""),
+        "general": f"{base_url}/summary/player-stats/general/" + (f"?mid={mid}" if mid else ""),
+    }
+
+
+
+    #### TEST PLAYER STATS ####
+
+
+    # Collect player statistics from all seven categories
+    all_player_stats = []
+
+    for category, stats_url in player_stats_urls.items():
+        try:
+            print(f"Navigating to {category} player statistics...")
+
+            await page.goto(
+                stats_url,
+                wait_until="domcontentloaded"
+            )
+
+            await page.wait_for_selector(
+                'table[data-testid="wcl-table"]',
+                timeout=15000
+            )
+
+            category_stats = await parse_player_stats(page)
+
+            print(
+                f"{category}: collected "
+                f"{len(category_stats)} player-stat records"
+            )
+
+            all_player_stats.extend(category_stats)
+
+        except Exception as e:
+            print(f"Could not collect {category} player statistics: {e}")
+
+    print("Total player-stat records:", len(all_player_stats))
+
+    #### TEST PLAYER STATS ####
+
+
 
     #Date
     match_datetime_text = await get_text(
@@ -932,44 +981,52 @@ async def parse_match(
     print(f"Total lineup players found: {len(lineups)}")
 
      
-    # Team stats — navigate to the dedicated stats subpage
+    
+    # Team stats — full match, first half, and second half
     team_stats = []
 
-    try:
-        print("Navigating to full-match team statistics...")
+    periods = {
+        "full_time": stats_urls["full_match"],
+        "first_half": stats_urls["first_half"],
+        "second_half": stats_urls["second_half"],
+    }
 
-        await page.goto(
-            stats_urls["full_match"],
-            wait_until="domcontentloaded"
-        )
+    for period, stats_url in periods.items():
+        try:
+            print(f"Navigating to {period} statistics...")
 
-        await page.wait_for_selector(
-            'div[data-testid="wcl-statistics"]',
-            timeout=15000
-        )
+            await page.goto(
+                stats_url,
+                wait_until="domcontentloaded"
+            )
 
-        team_stats = await parse_team_stats(
-            page,
-            home_team_id,
-            away_team_id
-        )
+            await page.wait_for_selector(
+                'div[data-testid="wcl-statistics"]',
+                timeout=15000
+            )
 
-        print("Team statistic records found:", len(team_stats))
-        print("Team statistics:", team_stats)
+            period_stats = await parse_team_stats(
+                page,
+                home_team_id,
+                away_team_id,
+                period=period
+            )
 
-    except Exception as e:
-        print(f"Team stats error: {e}")
+            print(f"DEBUG period requested: {period}")
+            print(f"DEBUG periods returned: {set(s['period'] for s in period_stats)}")
 
+            team_stats.extend(period_stats)
 
-    # Get full-match team statistics
-        await page.goto(stats_urls["full_match"])
-        await page.wait_for_load_state("domcontentloaded")
-    
-        team_stats = await parse_team_stats(
-            page,
-            home_team_id,
-            away_team_id
-        )
+            print(
+                f"{period}: collected "
+                f"{len(period_stats)} statistic records"
+            )
+
+        except Exception as e:
+            print(f"Could not collect {period} statistics: {e}")
+
+    print("Total team statistic records:", len(team_stats))
+
 
 
     return {
@@ -992,6 +1049,7 @@ async def parse_match(
         "lineups": lineups,
         "events": events,
         "team_stats": team_stats,
+        "player_stats": all_player_stats,
 
         "url": match_url,
         "stats_urls": stats_urls
@@ -1145,7 +1203,13 @@ async def get_primary_stat_value(element):
     """)
 
 
-async def parse_team_stats(page, home_team_id, away_team_id):
+
+async def parse_team_stats(
+    page,
+    home_team_id,
+    away_team_id,
+    period="full_time"
+):
     stats = []
     seen = set()
 
@@ -1194,17 +1258,135 @@ async def parse_team_stats(page, home_team_id, away_team_id):
             "team_id": home_team_id,
             "stat_name": label,
             "stat_value": home_value,
-            "period": "full_time",
+            "period": period,
         })
 
         stats.append({
             "team_id": away_team_id,
             "stat_name": label,
             "stat_value": away_value,
-            "period": "full_time",
+            "period": period,
         })
 
     return stats
+
+
+
+
+
+async def parse_player_stats(page):
+    player_stats = []
+
+    table = page.locator('table[data-testid="wcl-table"]')
+
+    if await table.count() == 0:
+        print("Player statistics table not found.")
+        return player_stats
+
+    # Read the statistic column names
+    headers = await table.locator(
+        'thead th[data-testid="wcl-tableHeadCell"]'
+    ).all()
+
+    stat_names = []
+
+    for header in headers:
+        name = (await header.inner_text()).strip()
+        stat_names.append(name)
+
+    # Read each player's row
+    rows = await table.locator(
+        'tbody tr[data-testid="wcl-tableBodyRow"]'
+    ).all()
+
+    for row in rows:
+        cells = await row.locator(
+            'td[data-testid="wcl-tableBodyCell"]'
+        ).all()
+
+        if not cells:
+            continue
+
+        player_figure = cells[0].locator(
+            '[data-testid="wcl-playerCell"]'
+        )
+
+        if await player_figure.count() == 0:
+            continue
+
+        player_external_id = await player_figure.get_attribute(
+            "data-analytics-player-id"
+        )
+
+        name_element = player_figure.locator(
+            '[data-testid="wcl-simple-text-02"]'
+        )
+
+        player_name = (
+            (await name_element.inner_text()).strip()
+            if await name_element.count()
+            else ""
+        )
+
+        # Match each cell to its statistic header
+        for index, cell in enumerate(cells[1:], start=1):
+            if index >= len(stat_names):
+                break
+
+            stat_name = stat_names[index]
+            raw_value = (await cell.inner_text()).strip()
+
+            if not raw_value or raw_value in {"-", "—", "null", "NULL"}:
+                # An unavailable rating must remain NULL, not zero.
+                if stat_name.strip().lower() == "rating":
+                    stat_value = None
+                    stat_total = None
+
+                else:
+                    # For count-based stats, a dash represents zero activity.
+                    stat_value = 0
+                    stat_total = None
+
+                player_stats.append({
+                    "player_external_id": player_external_id,
+                    "player_name": player_name,
+                    "stat_name": stat_name,
+                    "stat_value": stat_value,
+                    "stat_total": stat_total,
+                })
+
+                continue
+
+            # Remove percentage text, keeping the count or ratio
+            raw_value = raw_value.split("(")[0].strip()
+
+            stat_value = None
+            stat_total = None
+
+            if "/" in raw_value:
+                parts = raw_value.split("/", 1)
+
+                try:
+                    stat_value = float(parts[0].strip())
+                    stat_total = float(parts[1].strip())
+                except ValueError:
+                    continue
+            else:
+                try:
+                    stat_value = float(raw_value.replace(",", ""))
+                except ValueError:
+                    continue
+
+            player_stats.append({
+                "player_external_id": player_external_id,
+                "player_name": player_name,
+                "stat_name": stat_name,
+                "stat_value": stat_value,
+                "stat_total": stat_total,
+            })
+
+    return player_stats
+
 
 
 
@@ -1243,6 +1425,77 @@ def save_team_stats(match_id, stats):
 
 
 
+def save_player_stats(match_id, player_stats):
+    conn = sqlite3.connect("football.db")
+    cursor = conn.cursor()
+
+    saved = 0
+    skipped = 0
+
+    try:
+        for stat in player_stats:
+            player_name = stat["player_name"]
+
+            # Find the player's internal ID through this match's lineup
+            cursor.execute("""
+                SELECT DISTINCT l.player_id, l.team_id
+                FROM lineups l
+                JOIN players p ON p.id = l.player_id
+                WHERE l.match_id = ?
+                  AND p.name = ?
+            """, (match_id, player_name))
+
+            matches = cursor.fetchall()
+
+            # Only save if exactly one player matches
+            if len(matches) != 1:
+                print(
+                    f"Skipping player stats for {player_name}: "
+                    f"found {len(matches)} matching lineup records."
+                )
+                skipped += 1
+                continue
+
+            player_id, team_id = matches[0]
+
+            cursor.execute("""
+                INSERT INTO player_stats (
+                    match_id,
+                    player_id,
+                    team_id,
+                    stat_name,
+                    stat_value,
+                    stat_total
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(match_id, player_id, stat_name)
+                DO UPDATE SET
+                    team_id = excluded.team_id,
+                    stat_value = excluded.stat_value,
+                    stat_total = excluded.stat_total
+            """, (
+                match_id,
+                player_id,
+                team_id,
+                stat["stat_name"],
+                stat["stat_value"],
+                stat["stat_total"]
+            ))
+
+            saved += 1
+
+        conn.commit()
+        print(f"Player statistics saved: {saved}")
+        print(f"Player statistics skipped: {skipped}")
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        conn.close()
+
+
 
 async def main():
 
@@ -1276,6 +1529,11 @@ async def main():
                                 stage_id
                             )
 
+                print("DEBUG records returned:", len(data["team_stats"]))
+                print("DEBUG returned periods:", sorted({
+                    stat["period"] for stat in data["team_stats"]
+                }))
+
                 match_id = save_match(data)
                 print("Saved Match ID:", match_id)
 
@@ -1289,6 +1547,13 @@ async def main():
 
                 save_lineups(match_id, data["lineups"])
                 print("Lineups saved.")
+
+                save_player_stats(match_id, data["player_stats"])
+
+                print(
+                    "Periods being saved:",
+                    sorted({stat["period"] for stat in data["team_stats"]})
+                )
 
                 save_team_stats(match_id, data["team_stats"])
                 print("Team statistics saved:", len(data["team_stats"]))

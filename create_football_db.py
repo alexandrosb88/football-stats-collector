@@ -126,9 +126,13 @@ def create_database():
             team_id INTEGER,
             stat_name TEXT,
             stat_value REAL,
+            stat_total REAL,
+
             FOREIGN KEY (match_id) REFERENCES matches(id),
             FOREIGN KEY (player_id) REFERENCES players(id),
-            FOREIGN KEY (team_id) REFERENCES teams(id)
+            FOREIGN KEY (team_id) REFERENCES teams(id),
+
+            UNIQUE (match_id, player_id, stat_name)
         )
     """)
 
