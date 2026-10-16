@@ -216,11 +216,13 @@ def save_match(match):
             away_team_id,
             home_score,
             away_score,
+            home_ht_score,
+            away_ht_score,
             competition_id,
             stage_id,
             referee_id
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         match["match_date"],
         match["season_id"],
@@ -230,6 +232,8 @@ def save_match(match):
         match["away_team_id"],
         match["home_score"],
         match["away_score"],
+        match["home_ht_score"],
+        match["away_ht_score"],
         match["competition_id"],
         match["stage_id"],
         match["referee_id"]
@@ -419,6 +423,44 @@ async def parse_match(
     await page.goto(match_url, wait_until="networkidle")
 
 
+     #Half-time Score
+        
+    home_ht_score = None
+    away_ht_score = None
+
+    ht_section = page.locator(
+        'div[data-testid="wcl-headerSection-text"]'
+    )
+
+    for i in range(await ht_section.count()):
+        section = ht_section.nth(i)
+
+        labels = section.locator(
+            'span[data-testid="wcl-overline-02"]'
+        )
+
+        if await labels.count() < 2:
+            continue
+
+        period = (await labels.nth(0).inner_text()).strip()
+
+        if period.lower() == "1st half":
+            score_text = (
+                await labels.nth(1).inner_text()
+            ).strip()
+
+            try:
+                home_ht_score, away_ht_score = [
+                    int(score.strip())
+                    for score in score_text.split("-")
+                ]
+            except (ValueError, TypeError):
+                print(
+                    f"Could not parse half-time score: {score_text}"
+                )
+
+            break
+    
 
     #Get Team stats links
     parsed_url = urlparse(match_url)
@@ -449,8 +491,6 @@ async def parse_match(
     }
 
 
-
-    #### TEST PLAYER STATS ####
 
 
     # Collect player statistics from all seven categories
@@ -484,7 +524,7 @@ async def parse_match(
 
     print("Total player-stat records:", len(all_player_stats))
 
-    #### TEST PLAYER STATS ####
+    
 
 
 
@@ -559,6 +599,9 @@ async def parse_match(
     print ("Home Goals: " + str(home_goals))
     print ("Away Goals: " + str(away_goals))
 
+
+          
+        
     # Cards
     yellow_card_counter = 0
     red_card_counter = 0
@@ -843,7 +886,7 @@ async def parse_match(
             print(f"{time} - Goal - {player} - {event_detail}")
 
             events.append({
-                "team_id": home_team_id,
+                "team_id": away_team_id,
                 "player_id": player_id,
                 "second_player_id": None,
                 "assist_player_id": assist_player_id,
@@ -864,7 +907,7 @@ async def parse_match(
             yellow_card_counter += 1
 
             events.append({
-                "team_id": home_team_id,
+                "team_id": away_team_id,
                 "player_id": player_id,
                 "second_player_id": None,
                 "assist_player_id": None,
@@ -885,7 +928,7 @@ async def parse_match(
             red_card_counter += 1
 
             events.append({
-                "team_id": home_team_id,
+                "team_id": away_team_id,
                 "player_id": player_id,
                 "second_player_id": None,
                 "assist_player_id": None,
@@ -906,7 +949,7 @@ async def parse_match(
             )
 
             events.append({
-                "team_id": home_team_id,
+                "team_id": away_team_id,
                 "player_id": player_id,
                 "second_player_id": second_player_id,
                 "assist_player_id": None,
@@ -925,7 +968,7 @@ async def parse_match(
             print(f"{time} - Penalty missed - {player}")
 
             events.append({
-                "team_id": home_team_id,
+                "team_id": away_team_id,
                 "player_id": player_id,
                 "second_player_id": None,
                 "assist_player_id": None,
@@ -1035,6 +1078,8 @@ async def parse_match(
 
         "home_score": home_goals,
         "away_score": away_goals,
+        "home_ht_score": home_ht_score,
+        "away_ht_score": away_ht_score,
 
         "match_date": match_date,
         "matchday": matchday,
@@ -1388,7 +1433,110 @@ async def parse_player_stats(page):
     return player_stats
 
 
+async def parse_standings(page, competition_url):
+    """
+    Scrape overall, home, and away standings.
+    Returns a list of dictionaries ready for database insertion.
+    """
 
+    base_url = competition_url.rstrip("/")
+    all_standings = []
+
+    for scope in ("overall", "home", "away"):
+        url = f"{base_url}/{scope}/"
+        print(f"Scraping {scope} standings: {url}")
+
+        await page.goto(url, wait_until="domcontentloaded")
+
+        await page.wait_for_selector(
+            "div.ui-table__body div.ui-table__row",
+            timeout=15000
+        )
+
+        rows = page.locator(
+            "div.ui-table__body div.ui-table__row"
+        )
+
+        scope_standings = []
+
+        for i in range(await rows.count()):
+            row = rows.nth(i)
+
+            try:
+                position_text = await row.locator(
+                    ".tableCellRank"
+                ).inner_text()
+
+                position_match = re.search(r"\d+", position_text)
+
+                if not position_match:
+                    continue
+
+                position = int(position_match.group())
+
+                team_name = (
+                    await row.locator(
+                        "a.tableCellParticipant__name"
+                    ).inner_text()
+                ).strip()
+
+                values = await row.locator(
+                    "span.table__cell--value"
+                ).all_inner_texts()
+
+                if len(values) < 7:
+                    print(f"Incomplete standings row: {team_name}")
+                    continue
+
+                played = int(values[0].strip())
+                won = int(values[1].strip())
+                drawn = int(values[2].strip())
+                lost = int(values[3].strip())
+
+                goals_match = re.fullmatch(
+                    r"(\d+)\s*:\s*(\d+)",
+                    values[4].strip()
+                )
+
+                if not goals_match:
+                    print(f"Invalid goals for {team_name}")
+                    continue
+
+                goals_for = int(goals_match.group(1))
+                goals_against = int(goals_match.group(2))
+                goal_difference = int(values[5].strip())
+                points = int(values[6].strip())
+
+                scope_standings.append({
+                    "scope": scope,
+                    "position": position,
+                    "team_name": team_name,
+                    "points": points,
+                    "played": played,
+                    "won": won,
+                    "drawn": drawn,
+                    "lost": lost,
+                    "goals_for": goals_for,
+                    "goals_against": goals_against,
+                    "goal_difference": goal_difference,
+                })
+
+            except (ValueError, TypeError) as e:
+                print(f"Could not parse row in {scope}: {e}")
+
+        if not scope_standings:
+            raise RuntimeError(
+                f"No standings rows successfully parsed for {scope}. "
+                "Database has not been updated."
+            )
+
+        all_standings.extend(scope_standings)
+
+        print(
+            f"{scope}: collected {len(scope_standings)} teams"
+        )
+
+    return all_standings
 
 
 def save_team_stats(match_id, stats):
@@ -1497,14 +1645,100 @@ def save_player_stats(match_id, player_stats):
 
 
 
+def save_standings(standings, competition_id, season_id):
+    conn = sqlite3.connect("football.db", timeout=30)
+    cursor = conn.cursor()
+
+    try:
+        # Resolve or create all team IDs before deleting standings.
+        team_ids = {}
+
+        for item in standings:
+            team_name = item["team_name"]
+
+            if team_name not in team_ids:
+                cursor.execute(
+                    "SELECT id FROM teams WHERE name = ?",
+                    (team_name,)
+                )
+
+                result = cursor.fetchone()
+
+                if result:
+                    team_id = result[0]
+                else:
+                    cursor.execute(
+                        "INSERT INTO teams (name) VALUES (?)",
+                        (team_name,)
+                    )
+                    team_id = cursor.lastrowid
+
+                team_ids[team_name] = team_id
+
+        # Replace only the standings for this competition and season.
+        cursor.execute("""
+            DELETE FROM standings
+            WHERE competition_id = ?
+              AND season_id = ?
+              AND scope IN ('overall', 'home', 'away')
+        """, (competition_id, season_id))
+
+        # Insert all three tables.
+        for item in standings:
+            cursor.execute("""
+                INSERT INTO standings (
+                    team_id,
+                    competition_id,
+                    season_id,
+                    scope,
+                    position,
+                    points,
+                    played,
+                    won,
+                    drawn,
+                    lost,
+                    goals_for,
+                    goals_against,
+                    goal_difference
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                team_ids[item["team_name"]],
+                competition_id,
+                season_id,
+                item["scope"],
+                item["position"],
+                item["points"],
+                item["played"],
+                item["won"],
+                item["drawn"],
+                item["lost"],
+                item["goals_for"],
+                item["goals_against"],
+                item["goal_difference"]
+            ))
+
+        conn.commit()
+        print(f"Successfully saved {len(standings)} standings records.")
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        conn.close()
+
+
+
 async def main():
 
 
-    competition_id = get_or_create_competition("Super League")
+    super_league_id = get_or_create_competition("Super League")
+    greek_cup_id = get_or_create_competition("Greek Cup")
     season_id = get_or_create_season("2026/2027")
     stage_id = None
 
-    print("Competition ID:", competition_id)
+    print("Competition ID:", super_league_id)
     print("Season ID:", season_id)
     print("Stage ID:", stage_id)
 
@@ -1512,6 +1746,30 @@ async def main():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=False)
         page = await browser.new_page(user_agent="Mozilla/5.0 (compatible; MyScraper/1.0)")
+
+                # Scrape and save standings after all matches
+        standings_url = (
+            "https://www.soccerway.com/greece/"
+            "super-league/standings/MNJDddac/standings"
+        )
+
+        print("Fetching standings...")
+
+        try:
+            standings = await parse_standings(
+                page,
+                standings_url
+            )
+
+            save_standings(
+                standings,
+                competition_id,
+                season_id
+            )
+
+        except Exception as e:
+            print(f"Could not update standings: {e}")
+
 
         print("Fetching match links...")
         match_links = await get_match_links(page, CHAMPIONSHIP_URL)
@@ -1533,6 +1791,7 @@ async def main():
                 print("DEBUG returned periods:", sorted({
                     stat["period"] for stat in data["team_stats"]
                 }))
+
 
                 match_id = save_match(data)
                 print("Saved Match ID:", match_id)
@@ -1562,6 +1821,9 @@ async def main():
 
             except Exception as e:
                 print(f"Error scraping {link}: {e}")
+
+
+        
 
         await browser.close()
 

@@ -66,9 +66,12 @@ def create_database():
                 away_team_id INTEGER,
                 home_score INTEGER,
                 away_score INTEGER,
+                home_ht_score INTEGER,
+                away_ht_score INTEGER,
                 competition_id INTEGER,
                 stage_id INTEGER,
                 referee_id INTEGER,
+
                 FOREIGN KEY (home_team_id) REFERENCES teams(id),
                 FOREIGN KEY (away_team_id) REFERENCES teams(id),
                 FOREIGN KEY (competition_id) REFERENCES competitions(id),
@@ -111,10 +114,11 @@ def create_database():
             event_detail TEXT,
             home_score INTEGER,
             away_score INTEGER,
+
             FOREIGN KEY (match_id) REFERENCES matches(id),
             FOREIGN KEY (team_id) REFERENCES teams(id),
             FOREIGN KEY (player_id) REFERENCES players(id),
-            FOREIGN KEY (second_player_id) REFERENCES players(id)
+            FOREIGN KEY (second_player_id) REFERENCES players(id),
             FOREIGN KEY (assist_player_id) REFERENCES players(id)
         )
     """)
@@ -156,6 +160,7 @@ def create_database():
             team_id INTEGER,
             competition_id INTEGER,
             season_id INTEGER,
+            scope TEXT NOT NULL DEFAULT 'overall',
             position INTEGER,
             points INTEGER,
             played INTEGER,
@@ -165,6 +170,7 @@ def create_database():
             goals_for INTEGER,
             goals_against INTEGER,
             goal_difference INTEGER,
+
             FOREIGN KEY (team_id) REFERENCES teams(id),
             FOREIGN KEY (competition_id) REFERENCES competitions(id),
             FOREIGN KEY (season_id) REFERENCES seasons(id)
@@ -182,6 +188,7 @@ def create_database():
                 away_score INTEGER,
                 competition_id INTEGER,
                 season_id INTEGER,
+                
                 FOREIGN KEY (home_team_id) REFERENCES teams(id),
                 FOREIGN KEY (away_team_id) REFERENCES teams(id),
                 FOREIGN KEY (competition_id) REFERENCES competitions(id),
