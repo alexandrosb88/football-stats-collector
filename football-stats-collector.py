@@ -3,9 +3,11 @@ import pandas as pd
 import re
 import sqlite3
 from playwright.async_api import async_playwright
+from datetime import datetime
 import os
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, urlunparse
 import re
 
 # CONFIG — change this to your league/championship page
@@ -369,6 +371,117 @@ async def get_text(element, selector: str) -> str:
     """Return the text content of a subelement or empty string if not found."""
     el = await element.query_selector(selector)
     return (await el.text_content()) if el else ""
+
+
+
+
+
+async def get_upcoming_match_links(page):
+    fixtures_url = (
+        "https://www.soccerway.com/greece/"
+        "super-league/fixtures/"
+    )
+
+    await page.goto(
+        fixtures_url,
+        wait_until="domcontentloaded"
+    )
+
+    await page.wait_for_selector(
+        ".event__match",
+        timeout=20000
+    )
+
+    items = await page.locator(
+        ".event__round, .event__match"
+    ).evaluate_all("""
+        elements => elements.map(el => ({
+            type: el.matches('.event__round')
+                ? 'round'
+                : 'match',
+            text: el.matches('.event__round')
+                ? el.innerText.trim()
+                : '',
+            scheduled: el.matches(
+                '.event__match--scheduled'
+            ),
+            url: el.matches('.event__match')
+                ? el.querySelector('a.eventRowLink')?.href || null
+                : null
+        }))
+    """)
+
+    current_round = None
+    target_round = None
+
+    # Find the first round that contains scheduled fixtures.
+    for item in items:
+        if item["type"] == "round":
+            match = re.search(r"(\d+)", item["text"])
+            current_round = int(match.group(1)) if match else None
+
+        elif (
+            item["type"] == "match"
+            and item["scheduled"]
+            and item["url"]
+            and current_round is not None
+        ):
+            target_round = current_round
+            break
+
+    if target_round is None:
+        print("DEBUG: No round detected. First page elements:")
+        for item in items[:20]:
+            print(item)
+
+        return []
+
+    # Collect scheduled fixtures from that round only.
+    fixture_links = []
+    current_round = None
+
+    for item in items:
+        if item["type"] == "round":
+            match = re.search(r"(\d+)", item["text"])
+            current_round = int(match.group(1)) if match else None
+
+            if current_round != target_round and fixture_links:
+                break
+
+        elif (
+            current_round == target_round
+            and item["type"] == "match"
+            and item["scheduled"]
+            and item["url"]
+        ):
+            fixture_links.append(item["url"])
+
+    fixture_links = list(dict.fromkeys(fixture_links))
+
+    print(f"Selected round: {target_round}")
+    print(f"Found {len(fixture_links)} scheduled fixtures")
+
+    return fixture_links
+
+
+
+
+def make_h2h_url(match_url):
+    parsed = urlparse(match_url)
+    path = parsed.path.rstrip("/")
+
+    if "/h2h/" not in path:
+        path += "/h2h/overall/"
+
+    return urlunparse((
+        parsed.scheme,
+        parsed.netloc,
+        path,
+        "",
+        parsed.query,
+        ""
+    ))
+
 
 
 async def get_match_links(page, championship_url):
@@ -1539,6 +1652,129 @@ async def parse_standings(page, competition_url):
     return all_standings
 
 
+
+async def parse_h2h_rows(page, h2h_url):
+    await page.goto(h2h_url, wait_until="domcontentloaded")
+
+
+    try:
+        await page.wait_for_selector(
+            '[data-testid="wcl-headerSection-text"]',
+            timeout=15000
+        )
+    except Exception:
+        print(f"No H2H section headings found: {h2h_url}")
+        return []
+
+    # Find the exact "Head-to-head matches" heading.
+    heading = page.get_by_test_id(
+        "wcl-headerSection-text"
+    ).filter(has_text="Head-to-head matches")
+
+    if await heading.count() == 0:
+        print(f"Head-to-head heading not found: {h2h_url}")
+        return []
+
+    # Find the containing H2H section.
+    h2h_section = heading.locator(
+        "xpath=ancestor::div[contains(@class, 'h2h__section')]"
+    )
+
+    # Only select historical head-to-head rows in this section.
+    rows = h2h_section.locator("a.h2h__row")
+
+    print(f"Found {await rows.count()} direct H2H rows.")
+
+
+    # Only rows inside the historical head-to-head section.
+    rows = h2h_section.locator("a.h2h__row")
+    matches = []
+
+    for i in range(await rows.count()):
+        row = rows.nth(i)
+
+        try:
+            date_text = (
+                await row.locator(
+                    '[data-testid="wcl-stageTime"] '
+                    '[data-testid="wcl-simple-text-01"]'
+                ).inner_text()
+            ).strip()
+
+            try:
+                match_date = datetime.strptime(
+                    date_text, "%d.%m.%y"
+                ).date().isoformat()
+            except ValueError:
+                match_date = datetime.strptime(
+                    date_text, "%d.%m.%Y"
+                ).date().isoformat()
+
+            competition_label = (
+                await row.locator(
+                    ".h2h__event > span:not(.h2h__flag)"
+                ).first.inner_text()
+            ).strip()
+
+            home_team = (
+                await row.locator(
+                    '.h2h__homeParticipant '
+                    '[data-testid="wcl-simple-text-01"]'
+                ).inner_text()
+            ).strip()
+
+            away_team = (
+                await row.locator(
+                    '.h2h__awayParticipant '
+                    '[data-testid="wcl-simple-text-01"]'
+                ).inner_text()
+            ).strip()
+
+            scores = await row.locator(
+                '.h2h__result [data-testid="wcl-tableScore"]'
+            ).all_inner_texts()
+
+            if len(scores) != 2:
+                continue
+
+            matches.append({
+                "match_date": match_date,
+                "home_team": home_team,
+                "away_team": away_team,
+                "home_score": int(scores[0].strip()),
+                "away_score": int(scores[1].strip()),
+                "competition_label": competition_label,
+            })
+
+        except (ValueError, TypeError) as e:
+            print(f"Could not parse H2H row {i}: {e}")
+        except Exception as e:
+            print(f"Error reading H2H row {i}: {e}")
+
+    # Deduplicate and sort newest first.
+    unique_matches = {}
+
+    for match in matches:
+        key = (
+            match["match_date"],
+            match["home_team"],
+            match["away_team"],
+            match["competition_label"],
+        )
+        unique_matches[key] = match
+
+    result = sorted(
+        unique_matches.values(),
+        key=lambda match: match["match_date"],
+        reverse=True,
+    )
+
+    print(f"Parsed {len(result)} historical head-to-head matches.")
+    return result
+
+
+
+
 def save_team_stats(match_id, stats):
     conn = sqlite3.connect("football.db")
     cursor = conn.cursor()
@@ -1730,8 +1966,126 @@ def save_standings(standings, competition_id, season_id):
 
 
 
-async def main():
+def save_h2h_matches(matches, competition_ids):
+    if not matches:
+        print("No H2H matches to save.")
+        return
 
+    conn = sqlite3.connect("football.db", timeout=30)
+    cursor = conn.cursor()
+
+    try:
+        team_ids = {}
+
+        # Resolve all team IDs on this connection.
+        for match in matches:
+            for team_name in (
+                match["home_team"],
+                match["away_team"],
+            ):
+                if team_name in team_ids:
+                    continue
+
+                cursor.execute(
+                    "SELECT id FROM teams WHERE name = ?",
+                    (team_name,)
+                )
+                result = cursor.fetchone()
+
+                if result:
+                    team_id = result[0]
+                else:
+                    cursor.execute(
+                        "INSERT INTO teams (name) VALUES (?)",
+                        (team_name,)
+                    )
+                    team_id = cursor.lastrowid
+
+                team_ids[team_name] = team_id
+
+        saved_count = 0
+        updated_count = 0
+
+        for match in matches:
+            label = match["competition_label"].strip().upper()
+
+            # Unknown labels are retained with a NULL competition_id.
+            competition_id = competition_ids.get(label)
+            season_id = None  # Leave unknown historical seasons as NULL.
+
+            home_team_id = team_ids[match["home_team"]]
+            away_team_id = team_ids[match["away_team"]]
+
+            # Avoid duplicate rows when this scraper runs again.
+            cursor.execute("""
+                SELECT id
+                FROM h2h_matches
+                WHERE match_date = ?
+                  AND home_team_id = ?
+                  AND away_team_id = ?
+                  AND competition_id IS ?
+            """, (
+                match["match_date"],
+                home_team_id,
+                away_team_id,
+                competition_id,
+            ))
+
+            existing = cursor.fetchone()
+
+            if existing:
+                cursor.execute("""
+                    UPDATE h2h_matches
+                    SET home_score = ?,
+                        away_score = ?,
+                        season_id = ?
+                    WHERE id = ?
+                """, (
+                    match["home_score"],
+                    match["away_score"],
+                    season_id,
+                    existing[0],
+                ))
+                updated_count += 1
+            else:
+                cursor.execute("""
+                    INSERT INTO h2h_matches (
+                        match_date,
+                        home_team_id,
+                        away_team_id,
+                        home_score,
+                        away_score,
+                        competition_id,
+                        season_id
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    match["match_date"],
+                    home_team_id,
+                    away_team_id,
+                    match["home_score"],
+                    match["away_score"],
+                    competition_id,
+                    season_id,
+                ))
+                saved_count += 1
+
+        conn.commit()
+        print(
+            f"H2H saved: {saved_count} new, "
+            f"{updated_count} updated."
+        )
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        conn.close()
+
+
+
+async def main():
 
     super_league_id = get_or_create_competition("Super League")
     greek_cup_id = get_or_create_competition("Greek Cup")
@@ -1742,92 +2096,155 @@ async def main():
     print("Season ID:", season_id)
     print("Stage ID:", stage_id)
 
-
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=False)
-        page = await browser.new_page(user_agent="Mozilla/5.0 (compatible; MyScraper/1.0)")
-
-                # Scrape and save standings after all matches
-        standings_url = (
-            "https://www.soccerway.com/greece/"
-            "super-league/standings/MNJDddac/standings"
+        page = await browser.new_page(
+            user_agent="Mozilla/5.0 (compatible; MyScraper/1.0)"
         )
 
-        print("Fetching standings...")
-
         try:
-            standings = await parse_standings(
-                page,
-                standings_url
+            # 1. Scrape and save standings
+            standings_url = (
+                "https://www.soccerway.com/greece/"
+                "super-league/standings/MNJDddac/standings"
             )
 
-            save_standings(
-                standings,
-                competition_id,
-                season_id
-            )
+            print("Fetching standings...")
 
-        except Exception as e:
-            print(f"Could not update standings: {e}")
-
-
-        print("Fetching match links...")
-        match_links = await get_match_links(page, CHAMPIONSHIP_URL)
-        print(f"Found {len(match_links)} matches")
-
-        all_matches = []
-        for i, link in enumerate(match_links):
-            print(f"Scraping match {i+1}/{len(match_links)}: {link}")
             try:
-                data = await parse_match(
-                                page,
-                                link,
-                                competition_id,
-                                season_id,
-                                stage_id
-                            )
-
-                print("DEBUG records returned:", len(data["team_stats"]))
-                print("DEBUG returned periods:", sorted({
-                    stat["period"] for stat in data["team_stats"]
-                }))
-
-
-                match_id = save_match(data)
-                print("Saved Match ID:", match_id)
-
-                print("EVENTS FOUND:", len(data["events"]))
-                print("EVENT DATA:", data["events"])
-
-                print("Starting to save events...")
-                save_events(match_id, data["events"])
-                print("Events saved successfully!")
-
-
-                save_lineups(match_id, data["lineups"])
-                print("Lineups saved.")
-
-                save_player_stats(match_id, data["player_stats"])
-
-                print(
-                    "Periods being saved:",
-                    sorted({stat["period"] for stat in data["team_stats"]})
+                standings = await parse_standings(
+                    page,
+                    standings_url
                 )
 
-                save_team_stats(match_id, data["team_stats"])
-                print("Team statistics saved:", len(data["team_stats"]))
+                save_standings(
+                    standings,
+                    super_league_id,
+                    season_id
+                )
 
-                all_matches.append(data)
+                print("Standings saved successfully.")
 
             except Exception as e:
-                print(f"Error scraping {link}: {e}")
+                print(f"Could not update standings: {e}")
+
+            # 2. Fetch historical match links
+            print("Fetching match links...")
+
+            match_links = await get_match_links(
+                page,
+                CHAMPIONSHIP_URL
+            )
+
+            print(f"Found {len(match_links)} matches")
+
+            # 3. Find next-round fixtures once
+            
+            # Get only the upcoming fixtures in the next scheduled round.
+            fixture_links = await get_upcoming_match_links(page)
+            print(f"Collecting H2H for {len(fixture_links)} next-round fixtures.")
+
+            competition_ids = {
+                "SL": super_league_id,
+                "GC": greek_cup_id,
+            }
+
+            all_h2h_matches = []
+
+            for i, fixture_url in enumerate(fixture_links, start=1):
+                h2h_url = make_h2h_url(fixture_url)
+
+                print(
+                    f"Fetching H2H {i}/{len(fixture_links)}: "
+                    f"{fixture_url}"
+                )
+
+                try:
+                    h2h_matches = await parse_h2h_rows(page, h2h_url)
+                    all_h2h_matches.extend(h2h_matches)
+
+                except Exception as e:
+                    print(f"Could not scrape H2H for {fixture_url}: {e}")
+
+            save_h2h_matches(all_h2h_matches, competition_ids)
 
 
-        
+            # 4. Scrape historical matches
+            all_matches = []
 
-        await browser.close()
+            for i, link in enumerate(match_links):
+                print(
+                    f"Scraping match {i + 1}/{len(match_links)}: {link}"
+                )
+
+                try:
+                    data = await parse_match(
+                        page,
+                        link,
+                        super_league_id,
+                        season_id,
+                        stage_id
+                    )
+
+                    print(
+                        "DEBUG records returned:",
+                        len(data["team_stats"])
+                    )
+
+                    print(
+                        "DEBUG returned periods:",
+                        sorted({
+                            stat["period"]
+                            for stat in data["team_stats"]
+                        })
+                    )
+
+                    match_id = save_match(data)
+                    print("Saved Match ID:", match_id)
+
+                    print("EVENTS FOUND:", len(data["events"]))
+                    print("EVENT DATA:", data["events"])
+
+                    print("Starting to save events...")
+                    save_events(match_id, data["events"])
+                    print("Events saved successfully!")
+
+                    save_lineups(match_id, data["lineups"])
+                    print("Lineups saved.")
+
+                    save_player_stats(
+                        match_id,
+                        data["player_stats"]
+                    )
+
+                    print(
+                        "Periods being saved:",
+                        sorted({
+                            stat["period"]
+                            for stat in data["team_stats"]
+                        })
+                    )
+
+                    save_team_stats(
+                        match_id,
+                        data["team_stats"]
+                    )
+
+                    print(
+                        "Team statistics saved:",
+                        len(data["team_stats"])
+                    )
+
+                    all_matches.append(data)
+
+                except Exception as e:
+                    print(f"Error scraping {link}: {e}")
+
+        finally:
+            await browser.close()
+
 
 if __name__ == "__main__":
-
     asyncio.run(main())
+
 
