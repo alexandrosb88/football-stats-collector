@@ -46,14 +46,17 @@ def create_database():
         )
     """)
 
+
+
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS competition_stages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            competition_id INTEGER,
-            stage_name TEXT NOT NULL UNIQUE,
-            FOREIGN KEY (competition_id) REFERENCES competitions(id)
-        )
-    """)
+    CREATE TABLE IF NOT EXISTS competition_stages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        competition_id INTEGER NOT NULL,
+        stage_name TEXT NOT NULL,
+        FOREIGN KEY (competition_id) REFERENCES competitions(id),
+        UNIQUE (competition_id, stage_name)
+    )
+""")
 
     cursor.execute("""
             CREATE TABLE IF NOT EXISTS matches (

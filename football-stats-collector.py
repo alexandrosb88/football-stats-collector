@@ -115,6 +115,69 @@ def add_competition(name):
     conn.close()
 
 
+
+
+async def get_competition_stage(page):
+    try:
+        title = await page.locator(
+            ".headerLeague__title-text"
+        ).first.inner_text()
+
+        title = title.strip()
+
+        stage_mapping = {
+            "Super League - Championship Group": "Championship Group",
+            "Super League - Relegation Group": "Relegation Group",
+            "Super League - Conference Group": "Conference Group",
+        }
+
+        stage_name = stage_mapping.get(title)
+
+        print("Detected stage:", stage_name or "Regular Season")
+
+        return stage_name
+
+    except Exception as e:
+        print(f"Could not identify competition stage: {e}")
+        return None
+
+    
+
+def get_or_create_stage(competition_id, stage_name):
+    if not stage_name:
+        return None
+
+    conn = sqlite3.connect("football.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT id
+        FROM competition_stages
+        WHERE competition_id = ?
+        AND stage_name = ?
+    """, (competition_id, stage_name))
+
+    result = cursor.fetchone()
+
+    if result:
+        stage_id = result[0]
+    else:
+        cursor.execute("""
+            INSERT INTO competition_stages (
+                competition_id,
+                stage_name
+            )
+            VALUES (?, ?)
+        """, (competition_id, stage_name))
+
+        stage_id = cursor.lastrowid
+
+    conn.commit()
+    conn.close()
+
+    return stage_id
+
+
 def get_or_create_season(name):
     conn = sqlite3.connect("football.db")
     cursor = conn.cursor()
@@ -484,44 +547,141 @@ def make_h2h_url(match_url):
 
 
 
-async def get_match_links(page, championship_url):
-    await page.goto(championship_url, wait_until="networkidle")
 
-    # selector for the "show more matches" button
+async def get_match_links(page, championship_url, competition_id):
+
+    await page.goto(
+        championship_url,
+        wait_until="networkidle"
+    )
+
+    # 1. Click Show more until all matches are loaded
     button_selector = "button[data-testid='wcl-buttonLink']"
 
     while True:
-        button = page.locator(button_selector)
+        button = page.locator(button_selector).first
 
         if await button.count() == 0:
             break
 
         try:
-            # scroll into view (IMPORTANT)
             await button.scroll_into_view_if_needed()
-
-            # click with force (bypasses overlay issues)
             await button.click(force=True)
-
-            # wait for DOM update (better than sleep)
             await page.wait_for_timeout(1500)
 
         except Exception as e:
             print("Click failed:", e)
             break
 
-    # now extract all match links
-    links = await page.eval_on_selector_all(
-        "div.event__match a.eventRowLink",
-        "els => els.map(el => el.href)"
-    )
+    # 2. Read stage headings and matches in DOM order
+    raw_matches = await page.locator(
+        "div.leagues--static"
+    ).evaluate_all("""
+        containers => {
 
-    #print(links)
+            const results = [];
 
-    for link in links:
-        print(link)
+            for (const container of containers) {
 
-    return list(set(links))
+                let currentStage = null;
+
+                const elements = container.querySelectorAll(
+                    ".headerLeague__wrapper, .event__match"
+                );
+
+                for (const element of elements) {
+
+                    // A new stage heading changes the current stage
+                    if (element.matches(".headerLeague__wrapper")) {
+
+                        const title = element.querySelector(
+                            ".headerLeague__title-text"
+                        )?.textContent?.trim() || "";
+
+                        const prefix = "Super League - ";
+
+                        if (title.startsWith(prefix)) {
+                            currentStage = title.slice(prefix.length).trim();
+                        } else {
+                            currentStage = null;
+                        }
+                    }
+
+                    // Assign the current stage to each following match
+                    else if (element.matches(".event__match")) {
+
+                        const link = element.querySelector(
+                            "a.eventRowLink"
+                        );
+
+                        if (link) {
+                            results.push({
+                                url: link.href,
+                                stage_name: currentStage
+                            });
+                        }
+                    }
+                }
+            }
+
+            return results;
+        }
+    """)
+
+    # 3. Remove duplicate matches
+    unique_matches = {}
+
+    for match in raw_matches:
+        unique_matches[match["url"]] = match
+
+    raw_matches = list(unique_matches.values())
+
+    # 4. Get the correct database stage ID for each match
+    match_data = []
+
+    for match in raw_matches:
+
+        stage_name = match["stage_name"]
+
+        # Keep the existing database naming convention
+        if stage_name == "Conference League Group":
+            stage_name = "Conference Group"
+
+        stage_id = get_or_create_stage(
+            competition_id,
+            stage_name
+        )
+
+        match_data.append({
+            "url": match["url"],
+            "stage_id": stage_id
+        })
+
+    # 5. Print a summary
+    stage_counts = {}
+
+    for match in match_data:
+        stage_id = match["stage_id"]
+
+        stage_label = (
+            str(stage_id) if stage_id is not None
+            else "Regular Season (NULL)"
+        )
+
+        stage_counts[stage_label] = (
+            stage_counts.get(stage_label, 0) + 1
+        )
+
+    print("\n========== MATCH STAGE SUMMARY ==========")
+
+    for stage, count in stage_counts.items():
+        print(f"Stage ID {stage}: {count} matches")
+
+    print("Total unique matches:", len(match_data))
+    print("=========================================\n")
+
+    return match_data
+
 
 
   
@@ -2131,12 +2291,15 @@ async def main():
             # 2. Fetch historical match links
             print("Fetching match links...")
 
-            match_links = await get_match_links(
+            match_data = await get_match_links(
                 page,
-                CHAMPIONSHIP_URL
+                CHAMPIONSHIP_URL,
+                super_league_id
             )
 
-            print(f"Found {len(match_links)} matches")
+            print(f"Found {len(match_data)} matches")
+
+            print(f"Found {len(match_data)} matches")
 
             # 3. Find next-round fixtures once
             
@@ -2172,10 +2335,16 @@ async def main():
             # 4. Scrape historical matches
             all_matches = []
 
-            for i, link in enumerate(match_links):
+            for i, match in enumerate(match_data):
+
+                link = match["url"]
+                stage_id = match["stage_id"]
+
                 print(
-                    f"Scraping match {i + 1}/{len(match_links)}: {link}"
+                    f"Scraping match {i + 1}/{len(match_data)}: {link}"
                 )
+
+                print("Stage ID:", stage_id)
 
                 try:
                     data = await parse_match(
